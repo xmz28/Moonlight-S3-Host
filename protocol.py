@@ -11,6 +11,8 @@ MESSAGE = struct.Struct("!4sIII")
 MAX_JPEG = 256 * 1024
 WIDTH, HEIGHT = 800, 480
 TOOLBAR_HEIGHT = 32
+TOOLBAR_BUTTONS=(("LEFT",0,160),("RIGHT",160,320),("SCROLL",320,480),
+                 ("KEYBOARD",480,640),("BACK",640,720),("MENU",720,800))
 
 def token_bytes(token):
     if len(token) != 32 or any(c not in "0123456789abcdefABCDEF" for c in token):
@@ -73,10 +75,10 @@ def content_geometry(viewport, resolution):
 def toolbar_image(resolution, mode):
     bar=Image.new("RGB",(WIDTH,TOOLBAR_HEIGHT))
     draw=ImageDraw.Draw(bar)
-    for i,label in enumerate(("LEFT","RIGHT","SCROLL","KEYBOARD","BACK")):
-        draw.rectangle((i*160,0,(i+1)*160-1,31),fill=(25,85,105) if mode==label else (30,35,45))
+    for label,left,right in TOOLBAR_BUTTONS:
+        draw.rectangle((left,0,right-1,31),fill=(25,85,105) if mode==label else (30,35,45))
         box=draw.textbbox((0,0),label)
-        draw.text((i*160+(160-(box[2]-box[0]))//2,9),label,fill="white")
+        draw.text((left+(right-left-(box[2]-box[0]))//2,9),label,fill="white")
     if resolution=="400x240": bar=bar.resize((400,16),Image.Resampling.BILINEAR)
     return bar
 
@@ -99,6 +101,10 @@ def encode_frame(image, viewport, quality=60, resolution="400x240", toolbar=True
             ImageDraw.Draw(canvas).polygon(points,fill="white",outline="black")
     if toolbar:
         canvas.paste(toolbar_image(resolution,mode),(0,round(448*scale)))
+    else:
+        # Keep the local escape available at the same position when the bar is hidden.
+        canvas.paste(toolbar_image(resolution,mode).crop((round(720*scale),0,size[0],round(32*scale))),
+                     (round(720*scale),round(448*scale)))
     # Baseline JPEG, 4:2:0: compatible with S3 SIMD decoder.
     for q in range(quality, 9, -10):
         out = io.BytesIO()

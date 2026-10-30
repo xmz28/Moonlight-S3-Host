@@ -97,14 +97,14 @@ class TouchTests(unittest.TestCase):
         calls=[]
         touch=TouchController(Viewport.fit(MONITOR),self.mouse,on_back=lambda:calls.append(self.mouse.held))
         touch.update(300,200,1);touch.update(300,200,0)
-        touch.update(750,460,1);touch.update(750,460,1)
+        touch.update(680,460,1);touch.update(680,460,1)
         self.assertEqual(calls,[None]);self.assertIsNone(self.mouse.held)
     def test_view_only_back_works_without_desktop_input(self):
         calls=[]
         touch=TouchController(Viewport.fit(MONITOR),self.mouse,on_back=lambda:calls.append(True),enabled=False)
         touch.update(300,200,1);touch.update(300,200,0)
         touch.update(550,460,1);touch.update(550,460,0)
-        touch.update(750,460,1)
+        touch.update(680,460,1)
         self.assertEqual(calls,[True]);self.assertEqual(self.mouse.events,[])
 
 class NetworkTests(unittest.TestCase):
@@ -115,7 +115,7 @@ class NetworkTests(unittest.TestCase):
         errors=[]; frames=[]; mouse=FakeMouse()
         settings=dict(host="127.0.0.1",port=port,token=TOKEN,monitor=1,quality=60,fps=30,
                       resolution="400x240",control=True,toolbar=True,smooth=smooth,
-                      host_id="1"*32,device_id="a"*12)
+                      host_id="1"*32,device_id="a"*12,touch_mode="legacy")
         session=StreamSession(settings,capture=(MONITOR,lambda:Image.new("RGB",(1920,1080),"green")),mouse=mouse)
         def emulator():
             try:

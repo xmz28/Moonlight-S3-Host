@@ -5,8 +5,9 @@ from PIL import Image
 import mss
 from capture import DesktopCapture, ScaledCapture
 from protocol import MESSAGE, MAX_JPEG, Viewport, content_geometry, encode_frame, frame_packet, recv_exact, token_bytes
-from input_control import WindowsMouse, TouchController, cursor_position
+from input_control import WindowsMouse, TouchController, SingleTouchController, cursor_position
 from pairing import authenticate
+from session_control import FIRST_FRAME,STREAMING
 
 class StreamSession:
     def __init__(self, settings, report=lambda message: None, capture=None, mouse=None):
@@ -20,6 +21,7 @@ class StreamSession:
         self.error = None
         self.sent = self.acked = self.failed = 0
         self.profile=dict(capture_ms=0.0,encode_ms=0.0,send_ms=0.0,frames=0,bytes=0)
+        self.paused=threading.Event()
 
     def stop(self):
         self.stop_event.set()
@@ -42,16 +44,38 @@ class StreamSession:
                 if chunk == b"": raise ConnectionError("ESP32-S3 已断开")
                 if chunk: buffer.extend(chunk)
                 while len(buffer)>=MESSAGE.size:
-                    tag,a,b,c = MESSAGE.unpack(buffer[:16]); del buffer[:16]
+                    tag,a,b,c = MESSAGE.unpack(buffer[:16])
+                    if tag==b"TXT3":
+                        if not 1<=a<=128:raise ValueError("文本长度无效")
+                        if len(buffer)<16+a:break
+                        value=bytes(buffer[16:16+a]).decode("utf-8");del buffer[:16+a]
+                        if self.settings.get("control",True):controller.mouse.text(value)
+                        continue
+                    del buffer[:16]
                     if tag==b"TCH1":
-                        if controller: controller.update(a,b,c)
+                        if controller and not self.paused.is_set(): controller.update(a,b,c)
                         last_touch=time.monotonic()
-                    elif tag in (b"ACK1",b"ERR1"):
+                    elif tag==b"PAU3":
+                        controller.release()
+                        if a:self.paused.set()
+                        else:self.paused.clear()
+                        last_report=time.monotonic();last_count=self.acked
+                        self.report("本地菜单已打开，画面暂停，电脑程序继续运行。" if a else "已继续桌面。")
+                        with self.condition:self.condition.notify_all()
+                    elif tag==b"BYE3":self.stop()
+                    elif tag==b"MOD3":
+                        if hasattr(controller,"set_touch_mode"):controller.set_touch_mode(a)
+                    elif tag==b"KEY3":
+                        if self.settings.get("control",True):controller.mouse.shortcut(a)
+                    elif tag in (b"ACK1",b"ERR1",b"DRP3"):
                         with self.condition:
                             if a not in self.pending: raise ValueError("接收端返回未知帧号")
                             latency=(time.monotonic()-self.pending.pop(a))*1000
                             self.condition.notify_all()
-                        if tag==b"ACK1": self.acked+=1
+                        if tag==b"DRP3":continue
+                        if tag==b"ACK1":
+                            self.acked+=1
+                            if self.acked==1:self.report(("stage",STREAMING))
                         else:
                             self.failed+=1
                             raise ValueError("接收端拒绝 JPEG 帧：请查看 S3 串口的解码/显示错误")
@@ -107,21 +131,26 @@ class StreamSession:
                     def grab():
                         shot=capture.grab(monitor)
                         return Image.frombytes("RGB",shot.size,shot.bgra,"raw","BGRX")
-            controller=TouchController(viewport,self.mouse_override or WindowsMouse(),s.get("toolbar",True),
-                                       on_back=self.stop,enabled=s.get("control",True))
+            controller_type=TouchController if s.get("touch_mode")=="legacy" else SingleTouchController
+            args={} if controller_type is TouchController else dict(touch_mode=s.get("touch_mode","direct"))
+            controller=controller_type(viewport,self.mouse_override or WindowsMouse(),s.get("toolbar",True),
+                                       on_back=self.stop,enabled=s.get("control",True),**args)
             self.socket=socket.create_connection((s["host"],int(s["port"])),timeout=3)
             self.socket.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-            authenticate(self.socket,s.get("host_id",""),s["token"],s.get("device_id",""))
+            authenticate(self.socket,s.get("host_id",""),s["token"],s.get("device_id",""),s.get("request_id"))
             tag,width,height,limit=MESSAGE.unpack(recv_exact(self.socket,16))
             if (tag,width,height,limit)!=(b"RDY1",800,480,MAX_JPEG):
                 raise ValueError("接收端握手或版本不匹配")
             self.socket.settimeout(0.1)
             self.report("已配对，正在传送桌面；停止按钮立即结束控制")
+            self.report(("stage",FIRST_FRAME))
             receiver=threading.Thread(target=self._receive,args=(controller,),daemon=True)
             receiver.start()
             interval=1/int(s["fps"]); next_frame=time.monotonic(); sequence=0
             credits=3 if s.get("smooth",False) else 2
             while not self.stop_event.is_set():
+                if self.paused.is_set():
+                    self.socket.sendall(MESSAGE.pack(b"NOP3",0,0,0));self.stop_event.wait(.5);continue
                 with self.condition:
                     self.condition.wait_for(lambda:len(self.pending)<credits or self.stop_event.is_set(),timeout=0.1)
                     if self.stop_event.is_set(): break

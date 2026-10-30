@@ -11,6 +11,8 @@ sys.path.insert(0,str(ROOT))
 from input_control import dpi_aware
 from main import DEFAULTS
 from streamer import StreamSession
+from settings_store import profile_path,load_settings
+from device_request import RequestedSession
 
 
 def main():
@@ -25,7 +27,7 @@ def main():
     args=parser.parse_args()
     if args.seconds<=0: parser.error("seconds must be positive")
     dpi_aware()
-    settings=DEFAULTS|json.loads((ROOT/"settings.json").read_text(encoding="utf-8"))
+    settings=DEFAULTS|load_settings(profile_path(ROOT))
     settings.update(settings.get("pairings",{}).get(settings.get("device_id",""),{}))
     settings.update(control=False,quality=60,fps=25,smooth=not args.low_latency)
     if args.host: settings["host"]=args.host
@@ -46,12 +48,16 @@ def main():
             settings["resolution"]=resolution; reports=[]
             def report(message):
                 reports.append(message); print(resolution,message,flush=True)
-            session=StreamSession(settings,report=report)
-            timer=threading.Timer(args.seconds,session.stop); timer.start()
-            start=time.monotonic(); error=None
-            try: session.run()
-            except Exception as exc: error=str(exc)
-            finally: timer.cancel()
+            with RequestedSession(settings) as permit:
+                def progress(message):
+                    if isinstance(message,tuple):permit.stage(message[1])
+                    else:report(message)
+                session=StreamSession(permit.settings,report=progress)
+                timer=threading.Timer(args.seconds,session.stop); timer.start()
+                start=time.monotonic(); error=None
+                try: session.run()
+                except Exception as exc: error=str(exc)
+                finally: timer.cancel()
             elapsed=time.monotonic()-start
             result=dict(resolution=resolution,seconds=round(elapsed,3),sent=session.sent,
                         acked=session.acked,failed=session.failed,error=error,

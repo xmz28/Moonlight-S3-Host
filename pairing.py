@@ -91,11 +91,14 @@ def pair(host, port, pin, expected_device="", host_id=None):
         raise ConnectionError("配对失败：请在 S3 开启配对，检查四位码及有效期后重试") from exc
 
 
-def authenticate(sock, host_id, token, expected_device):
+def authenticate(sock, host_id, token, expected_device,request_id=None):
     host = identity_bytes(host_id)
     identity_bytes(expected_device, 12)
     key = token_bytes(token)
-    sock.sendall(b"AU2?" + host)
+    if request_id is None:sock.sendall(b"AU2?" + host) # v2 tests/tools only; v3 firmware rejects it.
+    else:
+        if not 0<int(request_id)<=0xffffffff:raise ValueError("连接请求已取消或过期")
+        sock.sendall(b"AU3?"+host+int(request_id).to_bytes(4,"big"))
     reply = recv_exact(sock, 48)
     if reply[:4] != b"CHL2" or reply[4:16] != expected_device.encode("ascii"):
         raise ValueError("设备身份或协议不匹配，请重新配对")

@@ -3,6 +3,9 @@ import ctypes
 from ctypes import wintypes
 import os
 import subprocess
+import time
+import math
+from protocol import TOOLBAR_BUTTONS
 
 class MOUSEINPUT(ctypes.Structure):
     _fields_ = [("dx",wintypes.LONG),("dy",wintypes.LONG),("mouseData",wintypes.DWORD),
@@ -64,6 +67,27 @@ class WindowsMouse:
     def keyboard(self):
         subprocess.Popen([os.path.join(os.environ.get("WINDIR",r"C:\Windows"),"System32","osk.exe")])
 
+    def relative(self,dx,dy):self._send(0x0001,int(dx),int(dy))
+
+    def _key(self,vk=0,scan=0,flags=0):
+        event=INPUT(type=1,ki=KEYBDINPUT(vk,scan,flags,0,0))
+        if self.user32.SendInput(1,ctypes.byref(event),ctypes.sizeof(INPUT))!=1:raise OSError("Windows 拒绝键盘输入注入")
+
+    def shortcut(self,index):
+        keys=((0x1b,),(0x0d,),(0x09,),(0x08,),(0x11,0x43),(0x11,0x56),(0x11,0x41),(0x12,0x09))
+        if not 0<=index<len(keys):raise ValueError("未知快捷键")
+        held=[]
+        try:
+            for vk in keys[index]:self._key(vk);held.append(vk)
+        finally:
+            for vk in reversed(held):self._key(vk,flags=2)
+
+    def text(self,value):
+        encoded=value.encode("utf-16-le")
+        for offset in range(0,len(encoded),2):
+            unit=int.from_bytes(encoded[offset:offset+2],"little")
+            self._key(scan=unit,flags=4);self._key(scan=unit,flags=6)
+
 class TouchController:
     def __init__(self, viewport, mouse, toolbar=True, on_back=None, enabled=True):
         self.viewport, self.mouse, self.toolbar = viewport, mouse, toolbar
@@ -90,10 +114,10 @@ class TouchController:
         if self.blocked: return
         if first and self.toolbar and y>=448:
             self.mouse.release()
-            label = ("LEFT","RIGHT","SCROLL","KEYBOARD","BACK")[x//160]
+            label = next(label for label,left,right in TOOLBAR_BUTTONS if left<=x<right)
             if label=="BACK":
                 if self.on_back:self.on_back()
-            elif not self.enabled:pass
+            elif label=="MENU" or not self.enabled:pass  # S3 handles MENU locally.
             elif label == "KEYBOARD":
                 self.mouse.keyboard()
                 self.mode = "LEFT"
@@ -117,3 +141,49 @@ class TouchController:
             self.mouse.move(*mapped)
             self.mouse.down(self.mode)
         self.active = True
+
+
+class SingleTouchController(TouchController):
+    """One contact only: tap, long-press right click, drag, relative trackpad."""
+    def __init__(self,*args,touch_mode="direct",clock=time.monotonic,**kwargs):
+        super().__init__(*args,**kwargs)
+        self.touch_mode=touch_mode;self.clock=clock;self.started=0;self.origin=(0,0);self.last=(0,0)
+        self.moved=False;self.right_clicked=False;self.dragging=False;self.last_tap=-10
+
+    def set_touch_mode(self,mode):
+        self.release();self.touch_mode="trackpad" if mode else "direct"
+
+    def release(self):
+        super().release();self.dragging=False;self.right_clicked=True
+
+    def update(self,x,y,down):
+        if not(0<=x<800 and 0<=y<480 and down in (0,1)):raise ValueError("无效触摸事件")
+        now=self.clock()
+        if not down:
+            if self.previous and not self.blocked and self.enabled and self.mode=="LEFT" and not self.dragging and not self.right_clicked and not self.moved:
+                self.mouse.down("LEFT");self.mouse.release();self.last_tap=now
+            self.mouse.release();self.active=self.blocked=self.previous=False;self.dragging=False;return
+        first=not self.previous
+        # Manual RIGHT/SCROLL and the existing toolbar remain one-contact operations.
+        if (first and self.toolbar and y>=448) or self.mode!="LEFT":
+            return super().update(x,y,down)
+        self.previous=True
+        if self.blocked or not self.enabled:return
+        mapped=self.viewport.map(x,y,clamp=self.active)
+        if mapped is None:self.blocked=True;return
+        if first:
+            self.started=now;self.origin=self.last=(x,y);self.moved=self.right_clicked=self.dragging=False
+            if self.touch_mode=="direct":self.mouse.move(*mapped)
+            elif now-self.last_tap<.3:self.mouse.down("LEFT");self.dragging=True
+            self.active=True;return
+        distance=math.hypot(x-self.origin[0],y-self.origin[1])
+        if distance>=8:self.moved=True
+        if self.touch_mode=="trackpad":
+            dx,dy=x-self.last[0],y-self.last[1]
+            if dx or dy:self.mouse.relative(round(dx*1.5),round(dy*1.5))
+        elif self.moved:
+            if not self.dragging and not self.right_clicked:self.mouse.down("LEFT");self.dragging=True
+            self.mouse.move(*mapped)
+        self.last=(x,y)
+        if not self.moved and not self.dragging and not self.right_clicked and now-self.started>=.6:
+            self.mouse.down("RIGHT");self.mouse.release();self.right_clicked=True
