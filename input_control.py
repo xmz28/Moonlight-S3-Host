@@ -65,9 +65,10 @@ class WindowsMouse:
         subprocess.Popen([os.path.join(os.environ.get("WINDIR",r"C:\Windows"),"System32","osk.exe")])
 
 class TouchController:
-    def __init__(self, viewport, mouse, toolbar=True):
+    def __init__(self, viewport, mouse, toolbar=True, on_back=None, enabled=True):
         self.viewport, self.mouse, self.toolbar = viewport, mouse, toolbar
-        self.mode = "LEFT"
+        self.on_back,self.enabled=on_back,enabled
+        self.mode = "LEFT" if enabled else "VIEW ONLY"
         self.active = self.blocked = self.previous = False
         self.scroll_y = 0
 
@@ -89,13 +90,17 @@ class TouchController:
         if self.blocked: return
         if first and self.toolbar and y>=448:
             self.mouse.release()
-            label = ("LEFT","RIGHT","SCROLL","KEYBOARD")[x//200]
-            if label == "KEYBOARD":
+            label = ("LEFT","RIGHT","SCROLL","KEYBOARD","BACK")[x//160]
+            if label=="BACK":
+                if self.on_back:self.on_back()
+            elif not self.enabled:pass
+            elif label == "KEYBOARD":
                 self.mouse.keyboard()
                 self.mode = "LEFT"
             else: self.mode = label
             self.blocked = True
             return
+        if not self.enabled:return
         mapped = self.viewport.map(x,y,clamp=self.active)
         if mapped is None:
             self.blocked = True

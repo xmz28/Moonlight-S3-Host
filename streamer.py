@@ -106,7 +106,8 @@ class StreamSession:
                     def grab():
                         shot=capture.grab(monitor)
                         return Image.frombytes("RGB",shot.size,shot.bgra,"raw","BGRX")
-            controller=TouchController(viewport,self.mouse_override or WindowsMouse(),s.get("toolbar",True)) if s.get("control",True) else None
+            controller=TouchController(viewport,self.mouse_override or WindowsMouse(),s.get("toolbar",True),
+                                       on_back=self.stop,enabled=s.get("control",True))
             self.socket=socket.create_connection((s["host"],int(s["port"])),timeout=3)
             self.socket.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
             self.socket.sendall(b"AUT1"+token)

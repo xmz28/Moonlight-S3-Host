@@ -73,9 +73,10 @@ def content_geometry(viewport, resolution):
 def toolbar_image(resolution, mode):
     bar=Image.new("RGB",(WIDTH,TOOLBAR_HEIGHT))
     draw=ImageDraw.Draw(bar)
-    for i,label in enumerate(("LEFT","RIGHT","SCROLL","KEYBOARD")):
-        draw.rectangle((i*200,0,(i+1)*200-1,31),fill=(25,85,105) if mode==label else (30,35,45))
-        draw.text((i*200+55,9),label,fill="white")
+    for i,label in enumerate(("LEFT","RIGHT","SCROLL","KEYBOARD","BACK")):
+        draw.rectangle((i*160,0,(i+1)*160-1,31),fill=(25,85,105) if mode==label else (30,35,45))
+        box=draw.textbbox((0,0),label)
+        draw.text((i*160+(160-(box[2]-box[0]))//2,9),label,fill="white")
     if resolution=="400x240": bar=bar.resize((400,16),Image.Resampling.BILINEAR)
     return bar
 

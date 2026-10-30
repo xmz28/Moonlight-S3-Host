@@ -80,7 +80,7 @@ class TouchTests(unittest.TestCase):
         self.touch.update(300,200,1); self.touch.update(300,240,1)
         self.assertIn(("wheel",2),self.mouse.events)
         self.touch.update(300,240,0)
-        self.touch.update(650,460,1)
+        self.touch.update(550,460,1)
         self.assertIn(("keyboard",),self.mouse.events)
         self.assertEqual(self.touch.mode,"LEFT")
     def test_timeout_requires_lift(self):
@@ -91,6 +91,19 @@ class TouchTests(unittest.TestCase):
         self.assertEqual(self.mouse.held,"LEFT")
     def test_invalid_coordinates(self):
         with self.assertRaises(ValueError): self.touch.update(800,0,1)
+    def test_back_releases_mouse_and_requests_stop_once(self):
+        calls=[]
+        touch=TouchController(Viewport.fit(MONITOR),self.mouse,on_back=lambda:calls.append(self.mouse.held))
+        touch.update(300,200,1);touch.update(300,200,0)
+        touch.update(750,460,1);touch.update(750,460,1)
+        self.assertEqual(calls,[None]);self.assertIsNone(self.mouse.held)
+    def test_view_only_back_works_without_desktop_input(self):
+        calls=[]
+        touch=TouchController(Viewport.fit(MONITOR),self.mouse,on_back=lambda:calls.append(True),enabled=False)
+        touch.update(300,200,1);touch.update(300,200,0)
+        touch.update(550,460,1);touch.update(550,460,0)
+        touch.update(750,460,1)
+        self.assertEqual(calls,[True]);self.assertEqual(self.mouse.events,[])
 
 class NetworkTests(unittest.TestCase):
     def exercise(self, disconnect=False, smooth=False):

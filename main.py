@@ -13,10 +13,11 @@ from protocol import token_bytes
 from streamer import StreamSession
 from discovery import discover
 from wifi_setup import show_dialog
+from remote_start import ReceiverStart
 
 BASE = Path(sys.executable).parent if getattr(sys,"frozen",False) else Path(__file__).resolve().parent
 DEFAULTS = dict(host="",port=47989,token="",monitor=1,quality=60,fps=25,
-                resolution="400x240",control=True,toolbar=True,smooth=True)
+                resolution="400x240",control=True,toolbar=True,smooth=True,device_id="")
 
 class App:
     def __init__(self, root):
@@ -25,6 +26,7 @@ class App:
         self.root.geometry("800x710")
         self.root.minsize(760,690)
         self.events=queue.Queue()
+        self.remote=ReceiverStart(lambda host,device:self.events.put(("remote_start",(host,device))))
         self.session=self.worker=None
         self.devices=[]; self.searching=False
         settings=DEFAULTS.copy()
@@ -73,7 +75,7 @@ class App:
         smooth=ttk.Checkbutton(frame,text="流畅优先（多缓冲一帧；关闭可减少排队）",variable=self.vars["smooth"])
         smooth.grid(row=9,column=0,columnspan=4,sticky="w")
         self.fields.append((smooth,"normal"))
-        ttk.Label(frame,text="电脑和 S3 接入同一局域网即可，电脑可用网线或 Wi-Fi，无需任何一方开热点。\n搜索后选择接收端；找不到时可填写屏幕上的 IP。配对码验证通过后开始串流。\n400×240 优先流畅；800×480 优先清晰。操作栏支持左键、右键、滚动和屏幕键盘。",wraplength=720,justify="left").grid(row=10,column=0,columnspan=4,sticky="w",pady=8)
+        ttk.Label(frame,text="先选择接收端；以后可点 S3 首页“开始串流”，也可从电脑端启动。\n两端接入同一局域网即可，电脑可用网线或 Wi-Fi，无需指定一方开热点。\n底栏 BACK 返回 S3 首页；LEFT / RIGHT / SCROLL / KEYBOARD 控制电脑。",wraplength=720,justify="left").grid(row=10,column=0,columnspan=4,sticky="w",pady=8)
         actions=ttk.Frame(frame); actions.grid(row=11,column=0,columnspan=4,sticky="w",pady=15)
         self.start_button=ttk.Button(actions,text="开始串流",command=self.start); self.start_button.pack(side="left",padx=(0,12))
         self.stop_button=ttk.Button(actions,text="停止 / 释放鼠标",command=self.stop,state="disabled"); self.stop_button.pack(side="left")
@@ -98,6 +100,7 @@ class App:
         if 0<=index<len(self.devices):
             device=self.devices[index]
             self.vars["host"].set(device.host); self.vars["port"].set(str(device.port))
+            self.vars["device_id"].set(device.identity)
             self.status.set(f"已选择 {device.name}（{device.identity}），开始串流时验证配对码。")
 
     def start(self):
@@ -129,7 +132,12 @@ class App:
             while True:
                 message=self.events.get_nowait()
                 if isinstance(message,tuple):
-                    kind,value=message; self.searching=False
+                    kind,value=message
+                    if kind=="remote_start":
+                        if not self.worker or not self.worker.is_alive():
+                            self.vars["host"].set(value[0]);self.vars["device_id"].set(value[1]);self.start()
+                        continue
+                    self.searching=False
                     self.search_button.configure(state="normal"); self.start_button.configure(state="normal")
                     if kind=="discovered":
                         self.devices=value; self.device_var.set("")
@@ -141,9 +149,12 @@ class App:
                     self.start_button.configure(state="normal"); self.stop_button.configure(state="disabled")
                 else: self.status.set(message)
         except queue.Empty: pass
+        self.remote.configure(self.vars["host"].get(),self.vars["token"].get(),self.vars["device_id"].get(),
+                              not self.searching and not (self.worker and self.worker.is_alive()))
         self.root.after(100,self.poll)
 
     def close(self):
+        self.remote.close()
         self.stop()
         if self.worker and self.worker.is_alive():
             self.root.after(100,self.close)
@@ -170,8 +181,9 @@ def main():
                     assert len(encode_frame(image,viewport))>4
             finally: capture.close()
         return
-    root=tk.Tk(); App(root)
+    root=tk.Tk(); application=App(root)
     if args.gui_smoke:
+        application.remote.close()
         # Exercise the packaged JPEG plugin and native codec without screen capture/input.
         import io
         from PIL import Image
