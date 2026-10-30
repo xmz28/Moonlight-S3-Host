@@ -6,6 +6,7 @@ import mss
 from capture import DesktopCapture, ScaledCapture
 from protocol import MESSAGE, MAX_JPEG, Viewport, content_geometry, encode_frame, frame_packet, recv_exact, token_bytes
 from input_control import WindowsMouse, TouchController, cursor_position
+from pairing import authenticate
 
 class StreamSession:
     def __init__(self, settings, report=lambda message: None, capture=None, mouse=None):
@@ -110,7 +111,7 @@ class StreamSession:
                                        on_back=self.stop,enabled=s.get("control",True))
             self.socket=socket.create_connection((s["host"],int(s["port"])),timeout=3)
             self.socket.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-            self.socket.sendall(b"AUT1"+token)
+            authenticate(self.socket,s.get("host_id",""),s["token"],s.get("device_id",""))
             tag,width,height,limit=MESSAGE.unpack(recv_exact(self.socket,16))
             if (tag,width,height,limit)!=(b"RDY1",800,480,MAX_JPEG):
                 raise ValueError("接收端握手或版本不匹配")

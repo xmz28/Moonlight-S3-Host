@@ -6,18 +6,19 @@ import queue
 import sys
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 import mss
 from input_control import dpi_aware
 from protocol import token_bytes
 from streamer import StreamSession
 from discovery import discover
 from wifi_setup import show_dialog
-from remote_start import ReceiverStart
+from computer_presence import ComputerPresence, computer_identity
+from pairing import pair, identity_bytes
 
 BASE = Path(sys.executable).parent if getattr(sys,"frozen",False) else Path(__file__).resolve().parent
 DEFAULTS = dict(host="",port=47989,token="",monitor=1,quality=60,fps=25,
-                resolution="400x240",control=True,toolbar=True,smooth=True,device_id="")
+                resolution="400x240",control=True,toolbar=True,smooth=True,device_id="",host_id="")
 
 class App:
     def __init__(self, root):
@@ -26,12 +27,21 @@ class App:
         self.root.geometry("800x710")
         self.root.minsize(760,690)
         self.events=queue.Queue()
-        self.remote=ReceiverStart(lambda host,device:self.events.put(("remote_start",(host,device))))
+        self.remote=ComputerPresence(lambda request:self.events.put(("receiver_request",request)))
         self.session=self.worker=None
+        self.pair_worker=None;self.pairing_busy=False
         self.devices=[]; self.searching=False
         settings=DEFAULTS.copy()
         try: settings.update(json.loads((BASE/"settings.json").read_text(encoding="utf-8")))
         except (OSError,ValueError): pass
+        settings["computer_id"]=computer_identity(settings)
+        self.pairings=settings.pop("pairings",{})
+        if not isinstance(self.pairings,dict): self.pairings={}
+        # Old compiled tokens are never migrated into a v2 device authorization.
+        record=self.pairings.get(settings.get("device_id",""),{})
+        if not isinstance(record,dict):record={}
+        settings["token"]=record.get("token","")
+        settings["host_id"]=record.get("host_id","")
         # Migrate the initial AP-only default. Users can still enter any manual IP.
         if int(settings.get("network_version",1))<2 and settings.get("host")=="192.168.4.1":
             settings["host"]=""
@@ -59,7 +69,11 @@ class App:
             widget.grid(row=row,column=col+1,sticky="ew",padx=(0,18),pady=8)
             self.fields.append((widget,"readonly" if values else "normal"))
         field("接收端 IP / 主机名","host",4); field("TCP 端口","port",4,2)
-        field("配对码","token",5)
+        ttk.Label(frame,text="连接方式").grid(row=5,column=0,sticky="w",pady=8)
+        pairing_frame=ttk.Frame(frame);pairing_frame.grid(row=5,column=1,sticky="w")
+        ttk.Label(pairing_frame,text="在 S3 上选择本机").pack(side="left")
+        manager=ttk.Button(pairing_frame,text="已配对设备",command=self.manage_devices)
+        manager.pack(side="left",padx=8);self.fields.append((manager,"normal"))
         with mss.MSS() as cap:
             monitors=[str(i) for i in range(1,len(cap.monitors))]
             details="  /  ".join(f"{i}: {m['width']}×{m['height']}" for i,m in enumerate(cap.monitors[1:],1))
@@ -75,7 +89,7 @@ class App:
         smooth=ttk.Checkbutton(frame,text="流畅优先（多缓冲一帧；关闭可减少排队）",variable=self.vars["smooth"])
         smooth.grid(row=9,column=0,columnspan=4,sticky="w")
         self.fields.append((smooth,"normal"))
-        ttk.Label(frame,text="先选择接收端；以后可点 S3 首页“开始串流”，也可从电脑端启动。\n两端接入同一局域网即可，电脑可用网线或 Wi-Fi，无需指定一方开热点。\n底栏 BACK 返回 S3 首页；LEFT / RIGHT / SCROLL / KEYBOARD 控制电脑。",wraplength=720,justify="left").grid(row=10,column=0,columnspan=4,sticky="w",pady=8)
+        ttk.Label(frame,text="在 S3 首页扫描并点击电脑；首次连接时，本机会自动弹窗输入 PIN。\n两端接入同一局域网即可，电脑可用网线或 Wi-Fi，无需指定一方开热点。\n底栏 BACK 返回 S3 首页；LEFT / RIGHT / SCROLL / KEYBOARD 控制电脑。",wraplength=720,justify="left").grid(row=10,column=0,columnspan=4,sticky="w",pady=8)
         actions=ttk.Frame(frame); actions.grid(row=11,column=0,columnspan=4,sticky="w",pady=15)
         self.start_button=ttk.Button(actions,text="开始串流",command=self.start); self.start_button.pack(side="left",padx=(0,12))
         self.stop_button=ttk.Button(actions,text="停止 / 释放鼠标",command=self.stop,state="disabled"); self.stop_button.pack(side="left")
@@ -83,6 +97,8 @@ class App:
         ttk.Label(frame,textvariable=self.status,wraplength=720,foreground="#087f8c").grid(row=12,column=0,columnspan=4,sticky="w",pady=10)
         frame.columnconfigure(1,weight=1); frame.columnconfigure(3,weight=1)
         root.protocol("WM_DELETE_WINDOW",self.close)
+        try:self.save_settings()
+        except OSError as exc:self.status.set(f"本地设置暂时无法保存：{exc}")
         root.after(100,self.poll)
 
     def search(self):
@@ -101,15 +117,69 @@ class App:
             device=self.devices[index]
             self.vars["host"].set(device.host); self.vars["port"].set(str(device.port))
             self.vars["device_id"].set(device.identity)
-            self.status.set(f"已选择 {device.name}（{device.identity}），开始串流时验证配对码。")
+            record=self.pairings.get(device.identity,{})
+            self.vars["token"].set(record.get("token",""));self.vars["host_id"].set(record.get("host_id",""))
+            self.status.set(f"已选择 {device.name}（{device.identity}），首次输入屏上四位码，之后自动验证。")
+
+    def save_settings(self):
+        s={k:v.get() for k,v in self.vars.items()}
+        # Credentials belong to the exact device identity, never to a guessed name/IP.
+        s.pop("token",None);s.pop("host_id",None)
+        s["pairings"]=self.pairings
+        (BASE/"settings.json").write_text(json.dumps(s,ensure_ascii=False,indent=2),encoding="utf-8")
+
+    def manage_devices(self):
+        dialog=tk.Toplevel(self.root);dialog.title("已配对设备");dialog.geometry("550x310")
+        listing=tk.Listbox(dialog,height=9);listing.pack(fill="both",expand=True,padx=16,pady=16)
+        identities=[]
+        def refresh():
+            identities[:]=list(self.pairings);listing.delete(0,"end")
+            for device in identities:
+                record=self.pairings[device]
+                listing.insert("end",f"{record.get('name','Moonlight S3')}  ·  {device}")
+        def remove():
+            selected=listing.curselection()
+            if not selected:return
+            device=identities[selected[0]]
+            if not messagebox.askyesno("删除配对","删除后，下次串流需要重新输入 PIN。",parent=dialog):return
+            self.pairings.pop(device,None)
+            if self.vars["device_id"].get()==device:
+                self.vars["token"].set("");self.vars["host_id"].set("")
+            self.save_settings();refresh()
+        ttk.Button(dialog,text="删除选中设备",command=remove).pack(pady=(0,16));refresh()
+
+    def pair_requested(self,request):
+        if self.pairing_busy or (self.worker and self.worker.is_alive()):return
+        self.pairing_busy=True
+        # Disable presence immediately, including while Tk runs its modal PIN dialog.
+        self.remote.configure(self.vars["computer_id"].get(),self.pairings,enabled=False)
+        pin=simpledialog.askstring("首次串流需要配对",f"{request['name']} 请求连接。\n请输入 S3 屏幕上的四位 PIN：",parent=self.root)
+        if pin is None:
+            self.pairing_busy=False;self.status.set("已取消。可在 S3 上再次选择电脑。");return
+        if len(pin)!=4 or not pin.isascii() or not pin.isdigit():
+            self.pairing_busy=False;messagebox.showerror("PIN 无效","请输入四位数字，保留开头的0。");return
+        for widget,_ in self.fields:widget.configure(state="disabled")
+        self.start_button.configure(state="disabled");self.status.set("正在配对，成功后自动开始串流……")
+        computer=self.vars["computer_id"].get()
+        def work():
+            try:
+                record=pair(request["host"],request["port"],pin,request["device_id"],computer)
+                record.update(host=request["host"],name=request["name"])
+                self.events.put(("pair_ok",(record,True)))
+            except Exception as exc:self.events.put(("pair_error",str(exc)))
+        self.pair_worker=threading.Thread(target=work,daemon=True);self.pair_worker.start()
 
     def start(self):
+        if self.pairing_busy or (self.worker and self.worker.is_alive()):return
+        if not self.vars["token"].get():
+            self.status.set("请在 S3 上扫描并选择这台电脑；首次串流会自动弹出 PIN 窗口。");return
         try:
             s={k:v.get() for k,v in self.vars.items()}
             for key in ("port","monitor","quality","fps","network_version"): s[key]=int(s[key])
             token_bytes(s["token"])
             if not s["host"].strip() or not 1<=s["port"]<=65535: raise ValueError("IP/端口无效")
-            (BASE/"settings.json").write_text(json.dumps(s,ensure_ascii=False,indent=2),encoding="utf-8")
+            identity_bytes(s["host_id"]);identity_bytes(s["device_id"],12)
+            self.save_settings()
             self.session=StreamSession(s,self.events.put)
             def run():
                 try:
@@ -121,7 +191,7 @@ class App:
             self.worker.start()
             for widget,_ in self.fields: widget.configure(state="disabled")
             self.start_button.configure(state="disabled"); self.stop_button.configure(state="normal")
-            self.status.set("正在连接并验证配对码……")
+            self.status.set("正在自动验证并连接……")
         except Exception as exc: messagebox.showerror("无法启动",str(exc))
 
     def stop(self):
@@ -133,9 +203,31 @@ class App:
                 message=self.events.get_nowait()
                 if isinstance(message,tuple):
                     kind,value=message
-                    if kind=="remote_start":
-                        if not self.worker or not self.worker.is_alive():
-                            self.vars["host"].set(value[0]);self.vars["device_id"].set(value[1]);self.start()
+                    if kind in ("pair_ok","pair_error"):
+                        self.pairing_busy=False
+                        for widget,state in self.fields:widget.configure(state=state)
+                        self.start_button.configure(state="normal")
+                        if kind=="pair_ok":
+                            record,start_after=value;device=record["device_id"]
+                            self.pairings[device]={key:record[key] for key in ("host_id","token","name","host") if key in record}
+                            for key in ("device_id","host_id","token","host"):
+                                if key in record:self.vars[key].set(record[key])
+                            try:self.save_settings()
+                            except OSError as exc:
+                                self.status.set(f"设备已配对，但电脑保存失败：{exc}");continue
+                            self.status.set("配对成功，之后会自动验证；可在 S3 或电脑端开始串流。")
+                            if start_after:self.start()
+                        else:
+                            self.status.set(value);messagebox.showerror("连接失败",value,parent=self.root)
+                        continue
+                    if kind=="receiver_request":
+                        if self.pairing_busy or (self.worker and self.worker.is_alive()):continue
+                        self.vars["host"].set(value["host"]);self.vars["device_id"].set(value["device_id"])
+                        self.vars["port"].set(str(value["port"]))
+                        record=self.pairings.get(value["device_id"],{})
+                        self.vars["token"].set(record.get("token",""));self.vars["host_id"].set(record.get("host_id",""))
+                        if value["paired"]:self.start()
+                        else:self.pair_requested(value)
                         continue
                     self.searching=False
                     self.search_button.configure(state="normal"); self.start_button.configure(state="normal")
@@ -149,14 +241,14 @@ class App:
                     self.start_button.configure(state="normal"); self.stop_button.configure(state="disabled")
                 else: self.status.set(message)
         except queue.Empty: pass
-        self.remote.configure(self.vars["host"].get(),self.vars["token"].get(),self.vars["device_id"].get(),
-                              not self.searching and not (self.worker and self.worker.is_alive()))
+        self.remote.configure(self.vars["computer_id"].get(),self.pairings,self.vars["host"].get(),self.vars["device_id"].get(),
+                              not self.pairing_busy and not self.searching and not (self.worker and self.worker.is_alive()))
         self.root.after(100,self.poll)
 
     def close(self):
         self.remote.close()
         self.stop()
-        if self.worker and self.worker.is_alive():
+        if (self.worker and self.worker.is_alive()) or (self.pair_worker and self.pair_worker.is_alive()):
             self.root.after(100,self.close)
         else: self.root.destroy()
 

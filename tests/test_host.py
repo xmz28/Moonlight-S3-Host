@@ -1,6 +1,8 @@
 import io
 from pathlib import Path
 import socket
+import hashlib
+import hmac
 import struct
 import threading
 import time
@@ -112,13 +114,19 @@ class NetworkTests(unittest.TestCase):
         port=listener.getsockname()[1]
         errors=[]; frames=[]; mouse=FakeMouse()
         settings=dict(host="127.0.0.1",port=port,token=TOKEN,monitor=1,quality=60,fps=30,
-                      resolution="400x240",control=True,toolbar=True,smooth=smooth)
+                      resolution="400x240",control=True,toolbar=True,smooth=smooth,
+                      host_id="1"*32,device_id="a"*12)
         session=StreamSession(settings,capture=(MONITOR,lambda:Image.new("RGB",(1920,1080),"green")),mouse=mouse)
         def emulator():
             try:
                 with listener.accept()[0] as conn:
                     conn.settimeout(2)
-                    self.assertEqual(recv_exact(conn,36),b"AUT1"+TOKEN.encode())
+                    self.assertEqual(recv_exact(conn,36),b"AU2?"+b"1"*32)
+                    nonce=bytes(range(32));transcript=b"a"*12+b"1"*32+nonce
+                    conn.sendall(b"CHL2"+b"a"*12+nonce)
+                    proof=hmac.new(TOKEN.encode(),b"client"+transcript,hashlib.sha256).hexdigest().encode()
+                    self.assertEqual(recv_exact(conn,68),b"PRF2"+proof)
+                    conn.sendall(b"OKA2"+hmac.new(TOKEN.encode(),b"server"+transcript,hashlib.sha256).hexdigest().encode())
                     hello=MESSAGE.pack(b"RDY1",800,480,MAX_JPEG)
                     conn.sendall(hello[:3]); conn.sendall(hello[3:])
                     for _ in range(window):

@@ -26,6 +26,7 @@ def main():
     if args.seconds<=0: parser.error("seconds must be positive")
     dpi_aware()
     settings=DEFAULTS|json.loads((ROOT/"settings.json").read_text(encoding="utf-8"))
+    settings.update(settings.get("pairings",{}).get(settings.get("device_id",""),{}))
     settings.update(control=False,quality=60,fps=25,smooth=not args.low_latency)
     if args.host: settings["host"]=args.host
     port=None; monitor=None; done=threading.Event(); serial_lines=[]
