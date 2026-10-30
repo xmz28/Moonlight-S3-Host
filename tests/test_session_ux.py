@@ -114,7 +114,7 @@ class LifecycleTests(unittest.TestCase):
         stop.set();thread.join(2);sock.close()
 
     def test_options_roundtrip_preserves_view_only_monitor_and_input(self):
-        settings=dict(touch_mode='trackpad',toolbar=False,control=False,resolution='800x480',monitor=2,quality=80,fps=20)
+        settings=dict(touch_mode='trackpad',stats=True,toolbar=False,control=False,resolution='800x480',monitor=2,quality=80,fps=20)
         self.assertEqual(unpack_options(pack_options(settings)),settings)
 
     def test_au3_contains_exact_request_and_still_validates_proof(self):

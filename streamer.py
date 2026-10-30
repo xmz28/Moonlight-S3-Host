@@ -22,6 +22,10 @@ class StreamSession:
         self.sent = self.acked = self.failed = 0
         self.profile=dict(capture_ms=0.0,encode_ms=0.0,send_ms=0.0,frames=0,bytes=0)
         self.paused=threading.Event()
+        self.overlay=threading.Event()
+        if settings.get("stats",False):self.overlay.set()
+        self.latest_ack_us=0
+        self.pause_id=0
 
     def stop(self):
         self.stop_event.set()
@@ -29,6 +33,21 @@ class StreamSession:
         if self.socket:
             try: self.socket.shutdown(socket.SHUT_RDWR)
             except OSError: pass
+
+    def _send_packet(self,packet,label="发送数据"):
+        """One writer, exact partial-write offsets; recv's 100ms timeout is not a send deadline."""
+        view=memoryview(packet);deadline=time.monotonic()+3
+        while view and not self.stop_event.is_set():
+            try:
+                count=self.socket.send(view)
+                if not count:raise ConnectionError("发送连接断开")
+                view=view[count:]
+            except socket.timeout:
+                if time.monotonic()>=deadline:raise TimeoutError(label+"超时")
+            except OSError:
+                if self.stop_event.is_set():return False
+                raise
+        return not view
 
     def _receive(self, controller):
         buffer = bytearray()
@@ -57,20 +76,25 @@ class StreamSession:
                         last_touch=time.monotonic()
                     elif tag==b"PAU3":
                         controller.release()
-                        if a:self.paused.set()
-                        else:self.paused.clear()
+                        with self.condition:
+                            if a:self.pause_id=b;self.paused.set()
+                            else:self.paused.clear()
+                            self.condition.notify_all()
                         last_report=time.monotonic();last_count=self.acked
                         self.report("本地菜单已打开，画面暂停，电脑程序继续运行。" if a else "已继续桌面。")
-                        with self.condition:self.condition.notify_all()
                     elif tag==b"BYE3":self.stop()
                     elif tag==b"MOD3":
                         if hasattr(controller,"set_touch_mode"):controller.set_touch_mode(a)
+                    elif tag==b"OVR3":
+                        if a:self.overlay.set()
+                        else:self.overlay.clear()
                     elif tag==b"KEY3":
                         if self.settings.get("control",True):controller.mouse.shortcut(a)
                     elif tag in (b"ACK1",b"ERR1",b"DRP3"):
                         with self.condition:
                             if a not in self.pending: raise ValueError("接收端返回未知帧号")
                             latency=(time.monotonic()-self.pending.pop(a))*1000
+                            if tag==b"ACK1":self.latest_ack_us=min(0xffffffff,round(latency*1000))
                             self.condition.notify_all()
                         if tag==b"DRP3":continue
                         if tag==b"ACK1":
@@ -146,34 +170,38 @@ class StreamSession:
             self.report(("stage",FIRST_FRAME))
             receiver=threading.Thread(target=self._receive,args=(controller,),daemon=True)
             receiver.start()
-            interval=1/int(s["fps"]); next_frame=time.monotonic(); sequence=0
+            interval=1/int(s["fps"]); next_frame=time.monotonic(); sequence=0;last_stats=0;last_overlay=False;last_pause_id=None
             credits=3 if s.get("smooth",False) else 2
             while not self.stop_event.is_set():
                 if self.paused.is_set():
-                    self.socket.sendall(MESSAGE.pack(b"NOP3",0,0,0));self.stop_event.wait(.5);continue
+                    with self.condition:pause_id=self.pause_id
+                    tag=b"PAK3" if pause_id!=last_pause_id else b"NOP3"
+                    if not self._send_packet(MESSAGE.pack(tag,pause_id,0,0),"发送菜单暂停确认" if tag==b"PAK3" else "发送菜单心跳"):break
+                    last_pause_id=pause_id
+                    with self.condition:self.condition.wait_for(lambda:not self.paused.is_set() or self.stop_event.is_set(),timeout=.5)
+                    continue
                 with self.condition:
-                    self.condition.wait_for(lambda:len(self.pending)<credits or self.stop_event.is_set(),timeout=0.1)
+                    self.condition.wait_for(lambda:len(self.pending)<credits or self.paused.is_set() or self.stop_event.is_set(),timeout=0.1)
                     if self.stop_event.is_set(): break
+                    if self.paused.is_set():continue
                     if len(self.pending)>=credits: continue
                 if self.stop_event.wait(max(0,next_frame-time.monotonic())): break
+                if self.paused.is_set():continue
+                overlay=self.overlay.is_set()
+                if overlay!=last_overlay or (overlay and time.monotonic()-last_stats>=1):
+                    if not self._send_packet(MESSAGE.pack(b"STA3",self.latest_ack_us,int(overlay),0),"发送统计"):break
+                    last_stats=time.monotonic();last_overlay=overlay
                 # Capture only after a receive credit is available: no queued old screenshots.
                 capture_start=time.perf_counter()
                 image=grab()
                 encode_start=time.perf_counter()
                 jpeg=encode_frame(image,viewport,int(s["quality"]),s["resolution"],s.get("toolbar",True),controller.mode if controller else "VIEW ONLY",None if self.capture_override else cursor_position())
                 encode_end=time.perf_counter()
+                if self.paused.is_set():continue # Never put a newly captured frame after the pause barrier.
                 sequence=(sequence+1)&0xffffffff
                 with self.condition: self.pending[sequence]=time.monotonic()
-                # A short per-recv timeout must not make slow Wi-Fi writes fail after 100 ms.
                 packet=frame_packet(sequence,jpeg)
-                view=memoryview(packet); deadline=time.monotonic()+3
-                while view and not self.stop_event.is_set():
-                    try:
-                        count=self.socket.send(view)
-                        if not count: raise ConnectionError("发送连接断开")
-                        view=view[count:]
-                    except socket.timeout:
-                        if time.monotonic()>deadline: raise TimeoutError("发送帧超时")
+                if not self._send_packet(packet,"发送帧"):break
                 self.sent+=1
                 self.profile["capture_ms"]+=(encode_start-capture_start)*1000
                 self.profile["encode_ms"]+=(encode_end-encode_start)*1000

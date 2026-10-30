@@ -15,7 +15,7 @@ def error_reason(exc):
 
 def pack_options(settings):
     mode=1 if settings.get("touch_mode")=="trackpad" else 0
-    return (mode | (4 if settings.get("toolbar",True) else 0) | (8 if settings.get("control",True) else 0)
+    return (mode | (2 if settings.get("stats",False) else 0) | (4 if settings.get("toolbar",True) else 0) | (8 if settings.get("control",True) else 0)
             | (16 if settings.get("resolution","400x240")=="400x240" else 0)
             | (max(1,min(8,int(settings.get("monitor",1))))<<8)
             | (max(30,min(90,int(settings.get("quality",60))))<<16)
@@ -23,6 +23,6 @@ def pack_options(settings):
 
 
 def unpack_options(value):
-    return dict(touch_mode="trackpad" if value&1 else "direct",toolbar=bool(value&4),control=bool(value&8),
+    return dict(touch_mode="trackpad" if value&1 else "direct",stats=bool(value&2),toolbar=bool(value&4),control=bool(value&8),
                 resolution="400x240" if value&16 else "800x480",monitor=max(1,min(8,(value>>8)&15)),
                 quality=max(30,min(90,(value>>16)&255)),fps=max(10,min(30,(value>>24)&63)))

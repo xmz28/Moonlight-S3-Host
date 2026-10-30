@@ -11,8 +11,8 @@ MESSAGE = struct.Struct("!4sIII")
 MAX_JPEG = 256 * 1024
 WIDTH, HEIGHT = 800, 480
 TOOLBAR_HEIGHT = 32
-TOOLBAR_BUTTONS=(("LEFT",0,160),("RIGHT",160,320),("SCROLL",320,480),
-                 ("KEYBOARD",480,640),("BACK",640,720),("MENU",720,800))
+TOOLBAR_BUTTONS=tuple((label,i*WIDTH//6,(i+1)*WIDTH//6)
+                      for i,label in enumerate(("LEFT","RIGHT","SCROLL","KEYBOARD","BACK","MENU")))
 
 def token_bytes(token):
     if len(token) != 32 or any(c not in "0123456789abcdefABCDEF" for c in token):
@@ -103,8 +103,8 @@ def encode_frame(image, viewport, quality=60, resolution="400x240", toolbar=True
         canvas.paste(toolbar_image(resolution,mode),(0,round(448*scale)))
     else:
         # Keep the local escape available at the same position when the bar is hidden.
-        canvas.paste(toolbar_image(resolution,mode).crop((round(720*scale),0,size[0],round(32*scale))),
-                     (round(720*scale),round(448*scale)))
+        canvas.paste(toolbar_image(resolution,mode).crop((round(666*scale),0,size[0],round(32*scale))),
+                     (round(666*scale),round(448*scale)))
     # Baseline JPEG, 4:2:0: compatible with S3 SIMD decoder.
     for q in range(quality, 9, -10):
         out = io.BytesIO()

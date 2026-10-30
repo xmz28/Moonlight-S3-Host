@@ -76,13 +76,13 @@ class TouchTests(unittest.TestCase):
         self.touch.update(300,200,1)
         self.assertFalse(self.mouse.events)
     def test_toolbar_right_scroll_keyboard(self):
-        for x,mode in ((250,"RIGHT"),(450,"SCROLL")):
+        for x,mode in ((250,"RIGHT"),(350,"SCROLL")):
             self.touch.update(x,460,1); self.touch.update(x,460,0)
             self.assertEqual(self.touch.mode,mode)
         self.touch.update(300,200,1); self.touch.update(300,240,1)
         self.assertIn(("wheel",2),self.mouse.events)
         self.touch.update(300,240,0)
-        self.touch.update(550,460,1)
+        self.touch.update(450,460,1)
         self.assertIn(("keyboard",),self.mouse.events)
         self.assertEqual(self.touch.mode,"LEFT")
     def test_timeout_requires_lift(self):
@@ -97,14 +97,14 @@ class TouchTests(unittest.TestCase):
         calls=[]
         touch=TouchController(Viewport.fit(MONITOR),self.mouse,on_back=lambda:calls.append(self.mouse.held))
         touch.update(300,200,1);touch.update(300,200,0)
-        touch.update(680,460,1);touch.update(680,460,1)
+        touch.update(600,460,1);touch.update(600,460,1)
         self.assertEqual(calls,[None]);self.assertIsNone(self.mouse.held)
     def test_view_only_back_works_without_desktop_input(self):
         calls=[]
         touch=TouchController(Viewport.fit(MONITOR),self.mouse,on_back=lambda:calls.append(True),enabled=False)
         touch.update(300,200,1);touch.update(300,200,0)
-        touch.update(550,460,1);touch.update(550,460,0)
-        touch.update(680,460,1)
+        touch.update(450,460,1);touch.update(450,460,0)
+        touch.update(600,460,1)
         self.assertEqual(calls,[True]);self.assertEqual(self.mouse.events,[])
 
 class NetworkTests(unittest.TestCase):
