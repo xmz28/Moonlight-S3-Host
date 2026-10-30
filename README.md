@@ -1,12 +1,12 @@
 # Moonlight S3 Host
 
 Windows 配套软件，用 JPEG 将选定显示器发送到 ESP32-S3 RGB 触屏，并接收触摸控制。
-对应固件：`C:\Users\10145294\Documents\PlatformIO\Projects\Moonlight_S3`。
+本仓库为 [Moonlight-S3-Host](https://github.com/xmz28/Moonlight-S3-Host)，配套固件见 [Moonlight-S3](https://github.com/xmz28/Moonlight-S3)。两个项目可分别下载、构建，源码目录无需放在固定位置。
 
 ## 启动
 
-直接运行 `dist\MoonlightS3Host\MoonlightS3Host.exe`（保留旁边 `_internal` 整个目录）。
-`settings.json` 保存本机参数及配对后的授权凭据，不要作为公开示例上传。旧固定密钥已停用；上一版四位码配对会迁移保留。
+公开包解压到可写目录后运行 `MoonlightS3Host.exe`（保留旁边 `_internal` 整个目录）。本机构建的公开包在 `dist-release/MoonlightS3Host-windows.zip`；原开发版仍在 `dist/MoonlightS3Host/`。
+`settings.json` 保存本机参数、电脑身份及配对后的授权凭据，不纳入公开包，首次运行自动生成。原开发目录的配置保留。升级时先退出软件，将新程序覆盖到原目录并保留自己的 `settings.json`；首次解压到新目录视为新的电脑身份，需要配对。旧固定密钥已停用；上一版四位码配对会迁移保留。
 也可运行源码 `python main.py` 或双击 `start.cmd`。
 
 1. 电脑软件保持打开；两端接入同一局域网。S3的Wi-Fi可在屏上设置，也可使用USB配网。
@@ -49,8 +49,7 @@ DXGI 不可用时依次回退到 GDI 缩放抓屏和 MSS；界面会显示实际
 
 ## 构建和测试
 
-本机复用现有 Python 3.12，不创建 venv。依赖已经存在，精确版本在 `requirements.txt`。
-另一台开发电脑缺依赖时可在其已有环境中运行 `python -m pip install -r requirements.txt`。
+Windows 开发环境使用 Python 3.12，依赖精确版本在 `requirements.txt`。本机继续复用现有 Python；其他开发者可按自己的环境运行 `python -m pip install -r requirements.txt`。
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -59,7 +58,7 @@ python main.py --capture-smoke
 .\build.ps1
 ```
 
-先运行上述测试命令，再用 `build.ps1` 通过 PyInstaller 生成 Windows onedir 软件。
+先运行上述测试命令，再用 `build.ps1` 通过 PyInstaller 生成 Windows onedir 软件。脚本输出到独立 `dist-release/`，保留原 `dist/` 及源码目录的本机配置。公开 ZIP 不包含 `settings.json`，并附 `SOURCE.txt` 和 `SHA256SUMS.txt`；工作区有修改时，源码信息会明确标为待审核构建，正式版本应从干净 tag 构建。详见 [发布说明](RELEASING.md)。
 打包软件自带 Python runtime，使用者不需要安装 Python；这不是另建开发虚拟环境。
 `--gui-smoke` 只创建界面后退出，不连接 S3，不捕获或控制桌面。
 `--capture-smoke` 实际验证 DXGI 抓屏及 JPEG 编码，不保存图像、不连接 S3、不注入输入。
@@ -69,12 +68,12 @@ python main.py --capture-smoke
 测试通过 loopback 模拟 S3，与虚拟鼠标验证协议和安全释放，不会移动真实鼠标。
 发现测试用本机UDP模拟回复；配网测试使用虚拟串口对象，不打开实际串口。
 已完成实际投屏、基本触摸回传和 Windows 控制，用户确认画面/操作正常。
-逐阶段性能记录位于固件工程 `docs/PERFORMANCE.md`；未逐项验证的操作和长期稳定性见 `docs/BUILD_REPORT.md`。
+逐阶段历史性能记录位于固件仓库 `docs/PERFORMANCE.md`；未逐项验证的操作和长期稳定性见该仓库 `docs/BUILD_REPORT.md`。这些历史记录不代表本轮发布整理重新进行了实机测试。
 
-协议文档在固件工程 `docs\PROTOCOL.md`。
+协议与授权详见固件仓库的 [协议文档](https://github.com/xmz28/Moonlight-S3/blob/main/docs/PROTOCOL.md)和[配对说明](https://github.com/xmz28/Moonlight-S3/blob/main/docs/PAIRING.md)。
 第三方组件和许可证见 `THIRD_PARTY_NOTICES.md` 与打包目录 `licenses`。
 
-## 2026-10-30 已验证版本
+## 2026-10-30 历史验证（界面改造前）
 
 界面改动前保存当前版本：默认流畅优先，400×240实测22.709 FPS、800×480实测11.688 FPS。
 23项软件测试与12项实机恢复检查通过；用户确认画面与触摸正常。
@@ -85,7 +84,7 @@ python main.py --capture-smoke
 
 S3列表通过电脑公告检查双端配对状态，按完整身份区分同名设备。首次从S3点选电脑，电脑自动弹窗输入PIN；配对成功自动串流。已有配对直接启动；BACK回到列表。S3保存最多四台电脑，电脑可保存多个S3；管理页删除某一台不影响其他授权。
 
-电脑使用稳定computer_id，已有四位码凭据会迁移保留。授权仍保存在忽略的settings.json；源代码与打包目录各有本机配置。37项软件测试及打包GUI smoke通过，用户已确认电脑列表、直接串流、返回、删除后首次状态及自动弹窗/串流全部正常。设备协议和边界见固件docs/PAIRING.md。
+电脑使用稳定computer_id，已有四位码凭据会迁移保留。授权保存在忽略的settings.json；源码与开发版打包目录各有本机配置，公开包不携带这些配置。此前37项软件测试及打包GUI smoke通过，用户已确认电脑列表、直接串流、返回、删除后首次状态及自动弹窗/串流全部正常。设备协议和边界见固件docs/PAIRING.md。
 
 
 ## 自动验证和防重放

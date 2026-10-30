@@ -4,3 +4,4 @@ dist/
 settings.json
 *.spec
 test-output/
+dist-release/
