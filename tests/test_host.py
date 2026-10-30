@@ -16,9 +16,11 @@ MONITOR=dict(left=-1920,top=100,width=1920,height=1080)
 TOKEN="0123456789abcdef0123456789abcdef"
 
 class FakeMouse:
-    def __init__(self): self.events=[]; self.held=None
+    def __init__(self):
+        self.events=[]; self.held=None; self.pressed=threading.Event()
     def move(self,*xy): self.events.append(("move",*xy))
-    def down(self,button): self.held=button; self.events.append(("down",button))
+    def down(self,button):
+        self.held=button; self.events.append(("down",button)); self.pressed.set()
     def release(self):
         if self.held: self.events.append(("up",self.held))
         self.held=None
@@ -91,12 +93,13 @@ class TouchTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.touch.update(800,0,1)
 
 class NetworkTests(unittest.TestCase):
-    def exercise(self, disconnect=False):
+    def exercise(self, disconnect=False, smooth=False):
+        window=3 if smooth else 2
         listener=socket.socket(); listener.bind(("127.0.0.1",0)); listener.listen()
         port=listener.getsockname()[1]
-        errors=[]; frames=[]; mouse=FakeMouse(); received_two=threading.Event()
+        errors=[]; frames=[]; mouse=FakeMouse()
         settings=dict(host="127.0.0.1",port=port,token=TOKEN,monitor=1,quality=60,fps=30,
-                      resolution="400x240",control=True,toolbar=True)
+                      resolution="400x240",control=True,toolbar=True,smooth=smooth)
         session=StreamSession(settings,capture=(MONITOR,lambda:Image.new("RGB",(1920,1080),"green")),mouse=mouse)
         def emulator():
             try:
@@ -105,18 +108,21 @@ class NetworkTests(unittest.TestCase):
                     self.assertEqual(recv_exact(conn,36),b"AUT1"+TOKEN.encode())
                     hello=MESSAGE.pack(b"RDY1",800,480,MAX_JPEG)
                     conn.sendall(hello[:3]); conn.sendall(hello[3:])
-                    for _ in range(2):
+                    for _ in range(window):
                         tag,seq,length,crc=MESSAGE.unpack(recv_exact(conn,16))
                         data=recv_exact(conn,length)
                         self.assertEqual(tag,b"JPG1"); self.assertEqual(zlib.crc32(data),crc)
                         self.assertEqual(Image.open(io.BytesIO(data)).size,(400,240))
                         frames.append(seq)
-                    # Two-frame credit window: no third frame before an ACK.
+                    # Neither mode may send past its credit limit before an ACK.
                     conn.settimeout(0.15)
                     with self.assertRaises(socket.timeout): conn.recv(1)
+                    # Real S3 sends touch-up heartbeats while idle. Recover from any
+                    # watchdog timeout during slow frame encoding before pressing.
+                    conn.sendall(MESSAGE.pack(b"TCH1",300,200,0))
                     touch=MESSAGE.pack(b"TCH1",300,200,1)
                     conn.sendall(touch[:5]); time.sleep(0.02); conn.sendall(touch[5:])
-                    time.sleep(0.06)
+                    self.assertTrue(mouse.pressed.wait(1),"Touch-down was not processed")
                     if disconnect: return
                     # No touch updates: receiver watchdog must release held mouse.
                     time.sleep(0.45)
@@ -140,8 +146,10 @@ class NetworkTests(unittest.TestCase):
         if errors: raise errors[0]
         self.assertIsNone(mouse.held)
         self.assertIn(("up","LEFT"),mouse.events)
-        self.assertEqual(len(frames),2 if disconnect else 3)
+        self.assertEqual(len(frames),window if disconnect else window+1)
     def test_fragmentation_flow_control_and_watchdog(self): self.exercise()
     def test_disconnect_releases_mouse(self): self.exercise(True)
+    def test_smooth_flow_control_and_watchdog(self): self.exercise(smooth=True)
+    def test_smooth_disconnect_releases_mouse(self): self.exercise(True,smooth=True)
 
 if __name__=="__main__": unittest.main()

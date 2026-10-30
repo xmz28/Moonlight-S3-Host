@@ -3,7 +3,8 @@ import threading
 import time
 from PIL import Image
 import mss
-from protocol import MESSAGE, MAX_JPEG, Viewport, encode_frame, frame_packet, recv_exact, token_bytes
+from capture import DesktopCapture, ScaledCapture
+from protocol import MESSAGE, MAX_JPEG, Viewport, content_geometry, encode_frame, frame_packet, recv_exact, token_bytes
 from input_control import WindowsMouse, TouchController, cursor_position
 
 class StreamSession:
@@ -17,6 +18,7 @@ class StreamSession:
         self.condition = threading.Condition()
         self.error = None
         self.sent = self.acked = self.failed = 0
+        self.profile=dict(capture_ms=0.0,encode_ms=0.0,send_ms=0.0,frames=0,bytes=0)
 
     def stop(self):
         self.stop_event.set()
@@ -78,7 +80,7 @@ class StreamSession:
         token=token_bytes(s["token"])
         if not 1<=int(s["fps"])<=30 or not 10<=int(s["quality"])<=90:
             raise ValueError("FPS 应为 1–30，JPEG 质量应为 10–90")
-        capture=None; receiver=None
+        capture=None; scaled=None; receiver=None
         try:
             if self.capture_override:
                 monitor, grab = self.capture_override
@@ -87,10 +89,23 @@ class StreamSession:
                 index=int(s["monitor"])
                 if not 1<=index<len(capture.monitors): raise ValueError("所选显示器不存在")
                 monitor=capture.monitors[index]
-                def grab():
-                    shot=capture.grab(monitor)
-                    return Image.frombytes("RGB",shot.size,shot.rgb)
             viewport=Viewport.fit(monitor,s.get("toolbar",True))
+            if not self.capture_override:
+                _, _, width, height = content_geometry(viewport, s["resolution"])
+                for backend, label in ((DesktopCapture,"DXGI"),(ScaledCapture,"GDI")):
+                    try:
+                        scaled=backend(monitor,(width,height))
+                        scaled.grab()  # Verify before pairing/streaming.
+                        grab=scaled.grab
+                        self.report(f"桌面抓屏：{label}")
+                        break
+                    except (OSError, RuntimeError, ImportError, AttributeError) as exc:
+                        if scaled: scaled.close(); scaled=None
+                        self.report(f"{label} 抓屏不可用，尝试兼容方式：{exc}")
+                if scaled is None:
+                    def grab():
+                        shot=capture.grab(monitor)
+                        return Image.frombytes("RGB",shot.size,shot.bgra,"raw","BGRX")
             controller=TouchController(viewport,self.mouse_override or WindowsMouse(),s.get("toolbar",True)) if s.get("control",True) else None
             self.socket=socket.create_connection((s["host"],int(s["port"])),timeout=3)
             self.socket.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
@@ -103,14 +118,19 @@ class StreamSession:
             receiver=threading.Thread(target=self._receive,args=(controller,),daemon=True)
             receiver.start()
             interval=1/int(s["fps"]); next_frame=time.monotonic(); sequence=0
+            credits=3 if s.get("smooth",False) else 2
             while not self.stop_event.is_set():
                 with self.condition:
-                    self.condition.wait_for(lambda:len(self.pending)<2 or self.stop_event.is_set(),timeout=0.1)
+                    self.condition.wait_for(lambda:len(self.pending)<credits or self.stop_event.is_set(),timeout=0.1)
                     if self.stop_event.is_set(): break
-                    if len(self.pending)>=2: continue
+                    if len(self.pending)>=credits: continue
                 if self.stop_event.wait(max(0,next_frame-time.monotonic())): break
                 # Capture only after a receive credit is available: no queued old screenshots.
-                jpeg=encode_frame(grab(),viewport,int(s["quality"]),s["resolution"],s.get("toolbar",True),controller.mode if controller else "VIEW ONLY",None if self.capture_override else cursor_position())
+                capture_start=time.perf_counter()
+                image=grab()
+                encode_start=time.perf_counter()
+                jpeg=encode_frame(image,viewport,int(s["quality"]),s["resolution"],s.get("toolbar",True),controller.mode if controller else "VIEW ONLY",None if self.capture_override else cursor_position())
+                encode_end=time.perf_counter()
                 sequence=(sequence+1)&0xffffffff
                 with self.condition: self.pending[sequence]=time.monotonic()
                 # A short per-recv timeout must not make slow Wi-Fi writes fail after 100 ms.
@@ -124,10 +144,15 @@ class StreamSession:
                     except socket.timeout:
                         if time.monotonic()>deadline: raise TimeoutError("发送帧超时")
                 self.sent+=1
+                self.profile["capture_ms"]+=(encode_start-capture_start)*1000
+                self.profile["encode_ms"]+=(encode_end-encode_start)*1000
+                self.profile["send_ms"]+=(time.perf_counter()-encode_end)*1000
+                self.profile["frames"]+=1; self.profile["bytes"]+=len(jpeg)
                 next_frame=max(next_frame+interval,time.monotonic())
             if self.error: raise self.error
         finally:
             self.stop()
             if receiver: receiver.join(timeout=4)
             if self.socket: self.socket.close()
+            if scaled: scaled.close()
             if capture: capture.close()

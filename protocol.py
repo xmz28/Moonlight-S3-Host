@@ -4,6 +4,7 @@ import socket
 import struct
 import zlib
 from dataclasses import dataclass
+from functools import lru_cache
 from PIL import Image, ImageDraw
 
 MESSAGE = struct.Struct("!4sIII")
@@ -55,25 +56,48 @@ class Viewport:
         return (self.source["left"] + round(x*(self.source["width"]-1)/max(1,self.width-1)),
                 self.source["top"] + round(y*(self.source["height"]-1)/max(1,self.height-1)))
 
+def output_size(resolution):
+    if resolution == "400x240": return 400,240
+    if resolution == "800x480": return WIDTH,HEIGHT
+    raise ValueError("不支持的分辨率")
+
+
+def content_geometry(viewport, resolution):
+    width,height=output_size(resolution)
+    scale=width/WIDTH
+    left,top=round(viewport.left*scale),round(viewport.top*scale)
+    return left,top,max(1,round((viewport.left+viewport.width)*scale)-left),max(1,round((viewport.top+viewport.height)*scale)-top)
+
+
+@lru_cache(maxsize=16)
+def toolbar_image(resolution, mode):
+    bar=Image.new("RGB",(WIDTH,TOOLBAR_HEIGHT))
+    draw=ImageDraw.Draw(bar)
+    for i,label in enumerate(("LEFT","RIGHT","SCROLL","KEYBOARD")):
+        draw.rectangle((i*200,0,(i+1)*200-1,31),fill=(25,85,105) if mode==label else (30,35,45))
+        draw.text((i*200+55,9),label,fill="white")
+    if resolution=="400x240": bar=bar.resize((400,16),Image.Resampling.BILINEAR)
+    return bar
+
+
 def encode_frame(image, viewport, quality=60, resolution="400x240", toolbar=True, mode="LEFT", cursor=None):
-    canvas = Image.new("RGB", (WIDTH,HEIGHT), (9,13,20))
-    canvas.paste(image.resize((viewport.width,viewport.height), Image.Resampling.BILINEAR),
-                 (viewport.left,viewport.top))
+    size=output_size(resolution)
+    scale=size[0]/WIDTH
+    left,top,width,height=content_geometry(viewport,resolution)
+    canvas = Image.new("RGB",size,(9,13,20))
+    # A GDI capture is already at this size; compatibility capture needs one resize.
+    if image.size!=(width,height):
+        image=image.resize((width,height),Image.Resampling.BILINEAR,reducing_gap=2.0)
+    canvas.paste(image,(left,top))
     if cursor:
         sx,sy=cursor[0]-viewport.source["left"],cursor[1]-viewport.source["top"]
         if 0<=sx<viewport.source["width"] and 0<=sy<viewport.source["height"]:
-            x=viewport.left+round(sx*(viewport.width-1)/max(1,viewport.source["width"]-1))
-            y=viewport.top+round(sy*(viewport.height-1)/max(1,viewport.source["height"]-1))
-            ImageDraw.Draw(canvas).polygon([(x,y),(x,y+18),(x+5,y+13),(x+10,y+21),(x+14,y+19),(x+9,y+11),(x+17,y+11)],fill="white",outline="black")
+            x=viewport.left+sx*(viewport.width-1)/max(1,viewport.source["width"]-1)
+            y=viewport.top+sy*(viewport.height-1)/max(1,viewport.source["height"]-1)
+            points=[(round((x+dx)*scale),round((y+dy)*scale)) for dx,dy in ((0,0),(0,18),(5,13),(10,21),(14,19),(9,11),(17,11))]
+            ImageDraw.Draw(canvas).polygon(points,fill="white",outline="black")
     if toolbar:
-        draw = ImageDraw.Draw(canvas)
-        for i, label in enumerate(("LEFT", "RIGHT", "SCROLL", "KEYBOARD")):
-            draw.rectangle((i*200,448,(i+1)*200-1,479), fill=(25,85,105) if mode==label else (30,35,45))
-            draw.text((i*200+55,457),label,fill="white")
-    if resolution == "400x240":
-        canvas = canvas.resize((400,240),Image.Resampling.BILINEAR)
-    elif resolution != "800x480":
-        raise ValueError("不支持的分辨率")
+        canvas.paste(toolbar_image(resolution,mode),(0,round(448*scale)))
     # Baseline JPEG, 4:2:0: compatible with S3 SIMD decoder.
     for q in range(quality, 9, -10):
         out = io.BytesIO()
