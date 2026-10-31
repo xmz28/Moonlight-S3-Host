@@ -36,6 +36,8 @@ class ReleasePackageTests(unittest.TestCase):
             with zipfile.ZipFile(archive) as bundle:
                 self.assertFalse(any(name.endswith("settings.json") for name in bundle.namelist()))
                 self.assertIn(b"modified", bundle.read("MoonlightS3Host/SOURCE.txt"))
+                self.assertIn(b"MS3 v3 session control / v2 PIN authorization / v1 JPEG framing",
+                              bundle.read("MoonlightS3Host/SOURCE.txt"))
                 self.assertIn("MoonlightS3Host/licenses/license.txt", bundle.namelist())
                 self.assertFalse(any(b"local-pairing-secret" in bundle.read(name) for name in bundle.namelist()))
             self.assertTrue((root / "dist-release/SHA256SUMS.txt").read_text().startswith(

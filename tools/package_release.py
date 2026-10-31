@@ -24,8 +24,8 @@ def package(root=ROOT):
         ["git", "status", "--porcelain", "--untracked-files=normal"], cwd=root, text=True)
     (app / "SOURCE.txt").write_text(
         f"Commit: {commit}\nWorking tree: {'modified; review build, not a tagged release' if status else 'clean'}\n"
-        "Protocol: MS3 v2 authorization / v1 JPEG framing\n"
-        "No settings.json is distributed. Identity is generated on first run.\n",
+        "Protocol: MS3 v3 session control / v2 PIN authorization / v1 JPEG framing\n"
+        "No settings.json is distributed. Identity uses the fixed per-user profile.\n",
         encoding="utf-8")
     # Inspect the actual staged payload, including files below _internal.
     if any(p.name.lower() in ("settings.json", "config_secrets.h") for p in app.rglob("*")):
