@@ -1,5 +1,13 @@
 # Moonlight S3 Host
 
+## 免编译下载（v0.1.0）
+
+[下载最新 Windows 软件（Latest）](https://github.com/xmz28/Moonlight-S3-Host/releases/latest) · [配套 S3 固件（Latest）](https://github.com/xmz28/Moonlight-S3/releases/latest)
+
+下载 `MoonlightS3Host-windows-v0.1.0.zip`，完整解压到可写目录，双击 `MoonlightS3Host.exe`；保留 `_internal` 文件夹。适用于 Windows x64，无需安装 Python 或重新编译。不要把 GitHub 自动生成的 Source code ZIP 当作可运行软件。首次连接仍需在 S3 上选择电脑并输入 PIN。
+
+升级前先从托盘退出旧程序，保留 `%LOCALAPPDATA%\MoonlightS3Host` 配置目录；换解压目录不改变电脑身份。v0.1.0 需配套同版本 S3 固件，详细说明见 [免编译安装说明](INSTALL.zh-CN.md)。
+
 Windows 配套软件，将选定显示器编码为 JPEG，发送到 ESP32-S3 RGB 触屏，并接收单点触摸、快捷键和文字输入。
 
 [Windows 源码仓库](https://github.com/xmz28/Moonlight-S3-Host) · [S3 固件仓库](https://github.com/xmz28/Moonlight-S3) · [更新记录](CHANGELOG.md) · [构建与发布](RELEASING.md)

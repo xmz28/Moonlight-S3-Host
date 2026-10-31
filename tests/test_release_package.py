@@ -14,7 +14,7 @@ class ReleasePackageTests(unittest.TestCase):
         app = root / "dist-release/MoonlightS3Host"
         app.mkdir(parents=True)
         (app / "MoonlightS3Host.exe").write_bytes(b"fake executable")
-        for name in ("README.md", "RELEASING.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md"):
+        for name in ("README.md", "INSTALL.zh-CN.md", "RELEASING.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md"):
             (root / name).write_text("Notice", encoding="utf-8")
         (root / "licenses").mkdir()
         (root / "licenses/license.txt").write_text("License", encoding="utf-8")

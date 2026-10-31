@@ -15,7 +15,7 @@ def package(root=ROOT):
         raise FileNotFoundError("Build dist-release/MoonlightS3Host first")
     # A previous smoke run may have generated settings in this disposable output.
     (app / "settings.json").unlink(missing_ok=True)
-    for name in ("README.md", "RELEASING.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md"):
+    for name in ("README.md", "INSTALL.zh-CN.md", "RELEASING.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md"):
         shutil.copyfile(root / name, app / name)
     shutil.copytree(root / "licenses", app / "licenses", dirs_exist_ok=True)
     commit = subprocess.check_output(
