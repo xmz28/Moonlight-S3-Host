@@ -7,19 +7,18 @@ import queue
 import sys
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox
 import mss
 from input_control import dpi_aware
 from protocol import token_bytes
 from streamer import StreamSession
-from discovery import discover
-from wifi_setup import show_dialog
 from computer_presence import ComputerPresence, computer_identity, resolve_receiver, validate_request
 from pairing import pair, identity_bytes
 from settings_store import load_settings, save_settings, profile_path
 from desktop_service import DesktopTray, set_startup
 import session_control as lifecycle
 from single_instance import SingleInstance
+from host_ui import build_main,show_settings,show_diagnostics,apply_phase,show_message
 
 BASE = Path(sys.executable).parent if getattr(sys,"frozen",False) else Path(__file__).resolve().parent
 DEFAULTS = dict(host="",port=47989,token="",monitor=1,quality=60,fps=25,
@@ -32,15 +31,12 @@ class App:
         self.settings_path=profile_path(BASE) if persist else BASE/"settings.json"
         self.active_request=None;self.pending_request=None;self.pin_dialog=None;self.pin_attempts=0
         self.root.title("Moonlight S3 · JPEG 桌面串流")
-        self.root.geometry("800x710")
-        self.root.minsize(760,420)
         self.events=queue.Queue()
         self.remote=ComputerPresence(lambda request:self.events.put(("receiver_request",request)),
                                      lambda receiver:self.events.put(("receiver_online",receiver)))
         self.session=self.worker=None
         self.pair_worker=None;self.pairing_busy=False
         self.connection_stop=threading.Event()
-        self.devices=[]; self.searching=False
         settings=DEFAULTS.copy()
         settings.update(load_settings(self.settings_path))
         settings["computer_id"]=computer_identity(settings)
@@ -56,68 +52,9 @@ class App:
             settings["host"]=""
         settings["network_version"]=2
         self.vars={k:tk.BooleanVar(value=v) if isinstance(v,bool) else tk.StringVar(value=str(v)) for k,v in settings.items()}
-        frame=ttk.Frame(root,padding=24); frame.pack(fill="both",expand=True)
-        ttk.Label(frame,text="Moonlight S3",font=("Segoe UI",24,"bold")).grid(row=0,column=0,columnspan=4,sticky="w")
-        ttk.Label(frame,text="ESP32-S3 触屏云桌面 · JPEG 视频 / 鼠标回传",font=("Microsoft YaHei UI",10)).grid(row=1,column=0,columnspan=4,sticky="w",pady=(0,20))
-        self.fields=[]
-        ttk.Label(frame,text="局域网接收端").grid(row=2,column=0,sticky="w")
-        self.device_var=tk.StringVar()
-        self.device_list=ttk.Combobox(frame,textvariable=self.device_var,state="readonly")
-        self.device_list.grid(row=2,column=1,columnspan=3,sticky="ew",pady=8)
-        self.device_list.bind("<<ComboboxSelected>>",self.select_device)
-        self.fields.append((self.device_list,"readonly"))
-        self.search_button=ttk.Button(frame,text="搜索局域网",command=self.search)
-        self.search_button.grid(row=3,column=1,sticky="w")
-        self.fields.append((self.search_button,"normal"))
-        setup_button=ttk.Button(frame,text="首次配置 S3 Wi-Fi（USB）",command=lambda:show_dialog(root))
-        setup_button.grid(row=3,column=2,columnspan=2,sticky="w")
-        self.fields.append((setup_button,"normal"))
-        def field(label,key,row,col=0,values=None):
-            ttk.Label(frame,text=label).grid(row=row,column=col,sticky="w",padx=(0,12),pady=8)
-            widget=ttk.Combobox(frame,textvariable=self.vars[key],values=values,state="readonly",width=21) if values else ttk.Entry(frame,textvariable=self.vars[key],width=24,show="*" if key=="token" else "")
-            widget.grid(row=row,column=col+1,sticky="ew",padx=(0,18),pady=8)
-            self.fields.append((widget,"readonly" if values else "normal"))
-        field("接收端 IP / 主机名","host",4); field("TCP 端口","port",4,2)
-        ttk.Label(frame,text="连接方式").grid(row=5,column=0,sticky="w",pady=8)
-        pairing_frame=ttk.Frame(frame);pairing_frame.grid(row=5,column=1,sticky="w")
-        ttk.Label(pairing_frame,text="在 S3 上选择本机").pack(side="left")
-        manager=ttk.Button(pairing_frame,text="已配对设备",command=self.manage_devices)
-        manager.pack(side="left",padx=8);self.fields.append((manager,"normal"))
-        with mss.MSS() as cap:
-            monitors=[str(i) for i in range(1,len(cap.monitors))]
-            self.monitor_count=len(monitors)
-            details="  /  ".join(f"{i}: {m['width']}×{m['height']}" for i,m in enumerate(cap.monitors[1:],1))
-        field("显示器编号","monitor",5,2,monitors)
-        field("传输分辨率","resolution",6,values=["400x240","800x480"])
-        field("目标 FPS","fps",6,2,["10","15","20","25","30"])
-        field("JPEG 质量","quality",7,values=["30","40","50","60","70","80","90"])
-        ttk.Label(frame,text=details).grid(row=7,column=2,columnspan=2,sticky="w")
-        for col,(key,label) in enumerate((("control","允许触屏控制电脑"),("toolbar","屏幕底部操作栏"))):
-            widget=ttk.Checkbutton(frame,text=label,variable=self.vars[key])
-            widget.grid(row=8,column=col*2,columnspan=2,sticky="w",pady=14)
-            self.fields.append((widget,"normal"))
-        smooth=ttk.Checkbutton(frame,text="流畅优先（多缓冲一帧；关闭可减少排队）",variable=self.vars["smooth"])
-        smooth.grid(row=9,column=0,columnspan=4,sticky="w")
-        self.fields.append((smooth,"normal"))
-        ttk.Label(frame,text="在 S3 选择电脑；首次连接时输入屏上 PIN，之后直接进入桌面。\n画质、显示器和触摸模式均在 S3 的电脑设置中调整。\n底部 BACK 右侧 MENU 可暂停、输入文字、重连或断开；断开保留电脑程序。",wraplength=720,justify="left").grid(row=10,column=0,columnspan=4,sticky="w",pady=8)
-        actions=ttk.Frame(frame); actions.grid(row=11,column=0,columnspan=4,sticky="w",pady=15)
-        self.start_button=ttk.Button(actions,text="开始串流",command=self.start); self.start_button.pack_forget()
-        self.stop_button=ttk.Button(actions,text="停止 / 释放鼠标",command=self.stop,state="disabled"); self.stop_button.pack(side="left")
-        ttk.Button(actions,text="退出软件",command=self.close).pack(side="left",padx=12)
-        ttk.Checkbutton(actions,text="开机后台运行",variable=self.vars["autostart"],command=self.startup_changed).pack(side="left",padx=8)
-        self.status=tk.StringVar(value="后台已就绪，请在 S3 选择电脑。关闭此窗口会收起到托盘。")
-        ttk.Label(frame,textvariable=self.status,wraplength=720,foreground="#087f8c").grid(row=12,column=0,columnspan=4,sticky="w",pady=10)
-        frame.columnconfigure(1,weight=1); frame.columnconfigure(3,weight=1)
+        with mss.MSS() as cap:self.monitor_count=max(1,len(cap.monitors)-1)
+        build_main(self)
         root.protocol("WM_DELETE_WINDOW",self.hide)
-        self.advanced=[]
-        for widget in frame.winfo_children():
-            info=widget.grid_info()
-            if info and (int(info.get("row",0)) in (2,3,4,6,7,8,9) or (int(info.get("row",0))==5 and int(info.get("column",0))>=2)):
-                if int(info.get("row",0)) in (2,3,4,9):self.advanced.append(widget)
-                widget.grid_remove()
-        self.advanced_visible=tk.BooleanVar(value=False)
-        ttk.Checkbutton(frame,text="显示网络诊断与兼容选项",variable=self.advanced_visible,command=self.toggle_advanced).grid(row=13,column=0,columnspan=4,sticky="w")
-        root.geometry("800x440")
         if persist:
             self.tray=DesktopTray(lambda action:self.events.put(("tray",action)),bool(self.vars["autostart"].get()))
             if self.vars["autostart"].get():set_startup(True,Path(__file__).resolve())
@@ -125,25 +62,13 @@ class App:
         except OSError as exc:self.status.set(f"本地设置暂时无法保存：{exc}")
         root.after(100,self.poll)
 
-    def search(self):
-        if self.searching: return
-        self.searching=True; self.search_button.configure(state="disabled")
-        self.start_button.configure(state="disabled")
-        self.status.set("正在搜索同一局域网内的接收端……")
-        def work():
-            try: self.events.put(("discovered",discover()))
-            except Exception as exc: self.events.put(("search_error",str(exc)))
-        threading.Thread(target=work,daemon=True).start()
+    def show_settings(self):show_settings(self)
 
-    def select_device(self,event=None):
-        index=self.device_list.current()
-        if 0<=index<len(self.devices):
-            device=self.devices[index]
-            self.vars["host"].set(device.host); self.vars["port"].set(str(device.port))
-            self.vars["device_id"].set(device.identity)
-            record=self.pairings.get(device.identity,{})
-            self.vars["token"].set(record.get("token",""));self.vars["host_id"].set(record.get("host_id",""))
-            self.status.set(f"已选择 {device.name}（{device.identity}），首次输入屏上四位码，之后自动验证。")
+    def show_diagnostics(self):show_diagnostics(self)
+
+    def preference_changed(self):
+        try:self.save_settings()
+        except OSError as exc:messagebox.showerror("无法保存设置",str(exc),parent=self.root)
 
     def save_settings(self):
         s={k:v.get() for k,v in self.vars.items()}
@@ -189,12 +114,6 @@ class App:
             refresh()
         ttk.Button(dialog,text="删除选中设备",command=remove).pack(pady=(0,16));refresh()
 
-    def toggle_advanced(self):
-        for widget in self.advanced:
-            if self.advanced_visible.get():widget.grid()
-            else:widget.grid_remove()
-        self.root.geometry("800x780" if self.advanced_visible.get() else "800x440")
-
     def startup_changed(self):
         try:
             enabled=bool(self.vars["autostart"].get());set_startup(enabled,Path(__file__).resolve())
@@ -214,6 +133,7 @@ class App:
         request=request or self.active_request
         if request:
             self.remote.set_phase(request["device_id"],request["action"],phase,reason)
+            self.events.put(("phase",(phase,request.copy())))
             logging.info("device=%s request=%08x phase=%s reason=%d",request['device_id'],request['action'],lifecycle.PHASE_LABELS.get(phase,phase),reason)
 
     def close_pin(self):
@@ -310,8 +230,7 @@ class App:
                 finally: self.events.put(None)
             self.worker=threading.Thread(target=run,daemon=True)
             self.worker.start()
-            for widget,_ in self.fields: widget.configure(state="disabled")
-            self.start_button.configure(state="disabled"); self.stop_button.configure(state="normal")
+            self.stop_button.configure(state="normal")
             self.status.set("正在按设备身份查找当前地址并自动验证……")
         except Exception as exc: messagebox.showerror("无法启动",str(exc))
 
@@ -353,17 +272,10 @@ class App:
                             if self.pin_attempts>=5:self.stage(lifecycle.FAILED,lifecycle.EXPIRED,request);self.close_pin()
                         continue
                     if kind=="receiver_request":self.receiver_request(value);continue
-                    self.searching=False
-                    self.search_button.configure(state="normal"); self.start_button.configure(state="normal")
-                    if kind=="discovered":
-                        self.devices=value; self.device_var.set("")
-                        self.device_list.configure(values=[d.label for d in value])
-                        self.status.set(f"发现 {len(value)} 个接收端，请从列表选择。" if value else "未发现接收端：确认两端同一局域网、无客户端隔离；也可手动填写 S3 的 IP。")
-                    else: self.status.set("搜索失败："+value)
+                    if kind=="phase":apply_phase(self,*value);continue
                 elif message is None:
-                    for widget,state in self.fields: widget.configure(state=state)
-                    self.start_button.configure(state="normal"); self.stop_button.configure(state="disabled")
-                else: self.status.set(message);logging.info("%s",message)
+                    self.stop_button.configure(state="disabled")
+                else:show_message(self,message);logging.info("%s",message)
         except queue.Empty: pass
         if self.closing:return
         busy=self.pairing_busy or bool(self.worker and self.worker.is_alive())
@@ -425,7 +337,6 @@ def main():
             jpeg=encode_frame(Image.new("RGB",(1920,1080),"blue"),view,resolution=resolution)
             decoded=Image.open(io.BytesIO(jpeg)); decoded.load()
             assert decoded.size==tuple(map(int,resolution.split("x")))
-        show_dialog(root)  # Enumerates ports only; never opens one or writes credentials.
         root.after(500,root.destroy)
     try:root.mainloop()
     finally:instance.close()
