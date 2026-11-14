@@ -1,5 +1,9 @@
 # Moonlight S3 Host
 
+[![platform: Windows x64](https://img.shields.io/badge/platform-Windows%20x64-blue)](#启动与连接) [![Release](https://img.shields.io/github/v/release/xmz28/Moonlight-S3-Host?label=release)](https://github.com/xmz28/Moonlight-S3-Host/releases/latest)
+
+[配套 ESP32-S3 接收端](https://github.com/xmz28/Moonlight-S3)
+
 ## 免编译下载（v0.1.0）
 
 [下载最新 Windows 软件（Latest）](https://github.com/xmz28/Moonlight-S3-Host/releases/latest) · [配套 S3 固件（Latest）](https://github.com/xmz28/Moonlight-S3/releases/latest)
